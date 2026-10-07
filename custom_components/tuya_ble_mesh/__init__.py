@@ -280,11 +280,13 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         try:
             device = coordinator.device
             if hasattr(device, "send_power"):
-                # Flash: off/on x3, with 0.5s delay between each command
+                # Flash x3 (0.5 s steps), ending in the light's original state.
+                # Tuya SIG Mesh bulbs ack Health Attention but don't blink.
+                was_on = bool(coordinator.state.is_on)
                 for _ in range(3):
-                    await device.send_power(False)
+                    await device.send_power(not was_on)
                     await asyncio.sleep(0.5)
-                    await device.send_power(True)
+                    await device.send_power(was_on)
                     await asyncio.sleep(0.5)
         except Exception as exc:
             raise HomeAssistantError(
@@ -397,6 +399,49 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         "reconnect",
         handle_reconnect,
         schema=vol.Schema({vol.Required("device_id"): str}),
+    )
+
+    async def handle_set_hsl_raw(call: ServiceCall) -> None:
+        """Send a raw Light HSL Set (any lightness) to a SIG Mesh light.
+
+        Debug/experiment helper: the light entity caps HSL lightness at 50%
+        (full saturated colour); this allows testing 50-100% (towards white).
+
+        Args:
+            call: Service call with device_id, lightness (0-100 %), hue
+                (0-360) and saturation (0-100 %).
+        """
+        device_id: str = call.data.get("device_id", "")
+        coordinator = _get_coordinator_for_device(hass, device_id)
+        if coordinator is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="device_not_found",
+                translation_placeholders={"device_id": device_id},
+            )
+        device: Any = coordinator.device
+        if not hasattr(device, "send_hsl"):
+            raise HomeAssistantError(f"Device {device_id} is not a SIG Mesh light")
+        lightness = round(float(call.data["lightness"]) * 0xFFFF / 100)
+        hue = round((float(call.data["hue"]) % 360) * 0xFFFF / 360)
+        saturation = round(float(call.data["saturation"]) * 0xFFFF / 100)
+        _LOGGER.info(
+            "Raw HSL Set to %s: L=%d H=%d S=%d", device.address, lightness, hue, saturation
+        )
+        await device.send_hsl(lightness, hue, saturation)
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_hsl_raw",
+        handle_set_hsl_raw,
+        schema=vol.Schema(
+            {
+                vol.Required("device_id"): str,
+                vol.Required("lightness"): vol.All(vol.Coerce(float), vol.Range(0, 100)),
+                vol.Required("hue"): vol.All(vol.Coerce(float), vol.Range(0, 360)),
+                vol.Required("saturation"): vol.All(vol.Coerce(float), vol.Range(0, 100)),
+            }
+        ),
     )
 
 

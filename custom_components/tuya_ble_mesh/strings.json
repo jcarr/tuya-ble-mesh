@@ -90,6 +90,11 @@
           "unicast_target": "Only change if instructed.",
           "iv_index": "Only change if instructed."
         }
+      },
+      "sig_light": {
+        "title": "Setting Up {name}",
+        "description": "We'll automatically add your light to Home Assistant and set up a secure connection to it.\n\nMake sure the light is **powered on**, **freshly reset** and **close to your Bluetooth adapter or proxy**, then click **Submit**.",
+        "data": {}
       }
     },
     "error": {
@@ -99,12 +104,12 @@
       "invalid_credential_length": "Network name and password must each be 16 characters or fewer.",
       "invalid_vendor_id": "Invalid vendor code — use 1 to 4 hex digits (e.g. 0x1001).",
       "cannot_connect": "Could not reach the device. Check that it's powered on and connected to your network.",
-      "cannot_connect_ble": "Kan inte ansluta. Kontrollera att enheten är i par-mode och nära Bluetooth-adaptern.",
+      "cannot_connect_ble": "Could not connect. Make sure the device is in pairing mode and close to your Bluetooth adapter.",
       "ble_adapter_busy": "Your Bluetooth adapter is busy (status 0x0a). Another integration (e.g., Home Assistant bluetooth) is monopolizing it. To fix this: (1) Add an ESPHome Bluetooth Proxy device, OR (2) Install a second USB Bluetooth adapter. See the integration documentation for details.",
-      "pairing_failed": "Pairing misslyckades. Fabriksåterställ enheten och försök igen.",
-      "verify_failed": "Enheten svarar inte. Försök igen.",
-      "device_type_mismatch": "Enhetstypen stämmer inte. Kontrollera att rätt enhetstyp är vald.",
-      "unknown_device_type": "Kunde inte identifiera enhetstyp automatiskt. Välj enhetstyp manuellt.",
+      "pairing_failed": "Pairing failed. Factory reset the device and try again.",
+      "verify_failed": "The device is not responding. Please try again.",
+      "device_type_mismatch": "The device type does not match. Check that the correct device type is selected.",
+      "unknown_device_type": "Could not identify the device type automatically. Please choose the device type manually.",
       "provisioning_failed": "Could not connect to the device. Make sure it's powered on and close to your Bluetooth adapter, then try again.",
       "timeout": "Connection timed out. Make sure the device is powered on and close by, then try again.",
       "device_not_found": "Device not found. Make sure it's powered on and within Bluetooth range, then try again.",
@@ -112,7 +117,8 @@
       "invalid_unicast_address": "Enter a 4-character hex address between 0001 and 7FFF (e.g. 00B0).",
       "provisioning_appkey_failed": "Could not bind the application key. Try factory resetting the device, then add it again.",
       "provisioning_proxy_failed": "Proxy Service step failed. Make sure the device has Proxy Service enabled, then try again.",
-      "provisioning_pbgatt_failed": "PB-GATT connection failed. Move the device closer to your Bluetooth adapter and try again."
+      "provisioning_pbgatt_failed": "PB-GATT connection failed. Move the device closer to your Bluetooth adapter and try again.",
+      "configuration_failed": "The device accepted the secure connection but could not finish setup. Factory reset the device (usually by switching it off and on several times), then try again."
     },
     "abort": {
       "already_configured": "This device is already set up in Home Assistant.",

@@ -18,15 +18,21 @@ from custom_components.tuya_ble_mesh.const import (
     CONF_MESH_ADDRESS,
     CONF_MESH_NAME,
     CONF_MESH_PASSWORD,
+    CONF_MODEL_ELEMENTS,
     CONF_NET_KEY,
+    CONF_TEMP_MAX_K,
+    CONF_TEMP_MIN_K,
     CONF_UNICAST_OUR,
     CONF_UNICAST_TARGET,
     CONF_VENDOR_ID,
     DEFAULT_BRIDGE_PORT,
     DEFAULT_IV_INDEX,
     DEFAULT_MESH_ADDRESS,
+    DEFAULT_SIG_TEMP_MAX_K,
+    DEFAULT_SIG_TEMP_MIN_K,
     DEFAULT_VENDOR_ID,
     DEVICE_TYPE_SIG_BRIDGE_PLUG,
+    DEVICE_TYPE_SIG_LIGHT,
     DEVICE_TYPE_SIG_PLUG,
     DEVICE_TYPE_TELINK_BRIDGE_LIGHT,
 )
@@ -40,6 +46,7 @@ if TYPE_CHECKING:
         TelinkBridgeDevice,
     )
     from tuya_ble_mesh.sig_mesh_device import SIGMeshDevice
+    from tuya_ble_mesh.sig_mesh_light import SIGMeshLight
 
 # Union type alias for all mesh device types returned by device_factory
 AnyMeshDevice: TypeAlias = Union[
@@ -96,19 +103,15 @@ def _create_telink_bridge_light(
     )
 
 
-def _create_sig_plug(
-    mac_address: str,
-    data: Mapping[str, Any],
-    ble_device_callback: Callable[[str], Any] | None,
-    ble_connect_callback: Callable[[Any], Any] | None = None,
-) -> SIGMeshDevice:
-    """Create a SIG Mesh direct device.
+def _sig_direct_args(
+    mac_address: str, data: Mapping[str, Any]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Build the shared SIGMeshDevice constructor (args, kwargs) from entry data.
 
     Raises:
         ValueError: If required SIG Mesh keys (net_key, dev_key, app_key) are missing.
     """
     from tuya_ble_mesh.secrets import DictSecretsManager
-    from tuya_ble_mesh.sig_mesh_device import SIGMeshDevice
 
     # PLAT-739: Validate required keys are present
     net_key = data.get(CONF_NET_KEY, "")
@@ -140,16 +143,67 @@ def _create_sig_plug(
         f"{op_prefix}-dev-key-{target_hex}/password": dev_key,
         f"{op_prefix}-app-key/password": app_key,
     }
+    args = (mac_address, target_addr, our_addr, DictSecretsManager(secrets_dict))
+    return args, {"op_item_prefix": op_prefix, "iv_index": iv_index}
 
-    return SIGMeshDevice(
-        mac_address,
-        target_addr,
-        our_addr,
-        DictSecretsManager(secrets_dict),
-        op_item_prefix=op_prefix,
-        iv_index=iv_index,
+
+def _create_sig_plug(
+    mac_address: str,
+    data: Mapping[str, Any],
+    ble_device_callback: Callable[[str], Any] | None,
+    ble_connect_callback: Callable[[Any], Any] | None = None,
+) -> SIGMeshDevice:
+    """Create a SIG Mesh direct device.
+
+    ``ble_connect_callback`` is accepted for factory-signature compatibility but
+    unused: SIGMeshDevice connects via bleak-retry-connector itself whenever a
+    ``ble_device_callback`` (HA Bluetooth) is supplied.
+
+    Raises:
+        ValueError: If required SIG Mesh keys (net_key, dev_key, app_key) are missing.
+    """
+    from tuya_ble_mesh.sig_mesh_device import SIGMeshDevice
+
+    args, kwargs = _sig_direct_args(mac_address, data)
+    return SIGMeshDevice(*args, **kwargs, ble_device_callback=ble_device_callback)
+
+
+def _create_sig_light(
+    mac_address: str,
+    data: Mapping[str, Any],
+    ble_device_callback: Callable[[str], Any] | None,
+    ble_connect_callback: Callable[[Any], Any] | None = None,
+) -> SIGMeshLight:
+    """Create a SIG Mesh light (OnOff / Lightness / CTL / HSL).
+
+    Raises:
+        ValueError: If required SIG Mesh keys are missing.
+    """
+    from tuya_ble_mesh.sig_mesh_light import SIGMeshLight
+
+    raw_elements: Mapping[str, Any] = data.get(CONF_MODEL_ELEMENTS) or {}
+    model_elements: dict[int, int] = {}
+    for model_hex, index in raw_elements.items():
+        try:
+            model_elements[int(model_hex, 16)] = int(index)
+        except (TypeError, ValueError):
+            _LOGGER.debug("Ignoring bad model element entry %r=%r", model_hex, index)
+
+    # Only a device-reported range is passed; without one the light scales
+    # its default display range onto the full mesh range (Tuya behaviour).
+    temp_range: tuple[int, int] | None = None
+    if CONF_TEMP_MIN_K in data and CONF_TEMP_MAX_K in data:
+        temp_range = (
+            int(data.get(CONF_TEMP_MIN_K, DEFAULT_SIG_TEMP_MIN_K)),
+            int(data.get(CONF_TEMP_MAX_K, DEFAULT_SIG_TEMP_MAX_K)),
+        )
+    args, kwargs = _sig_direct_args(mac_address, data)
+    return SIGMeshLight(
+        *args,
+        **kwargs,
         ble_device_callback=ble_device_callback,
-        ble_connect_callback=ble_connect_callback,
+        model_elements=model_elements,
+        temp_range_k=temp_range,
     )
 
 
@@ -194,6 +248,7 @@ _DEVICE_CREATORS: dict[
     DEVICE_TYPE_SIG_BRIDGE_PLUG: _create_sig_bridge_plug,
     DEVICE_TYPE_TELINK_BRIDGE_LIGHT: _create_telink_bridge_light,
     DEVICE_TYPE_SIG_PLUG: _create_sig_plug,
+    DEVICE_TYPE_SIG_LIGHT: _create_sig_light,
 }
 
 

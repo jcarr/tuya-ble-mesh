@@ -73,10 +73,11 @@ class TuyaBLEMeshIdentifyButton(TuyaBLEMeshEntity, ButtonEntity):
         if not hasattr(device, "send_power"):
             _LOGGER.warning("Device %s does not support identify", device.address)
             return
+        was_on = bool(self.coordinator.state.is_on)
         for _ in range(_IDENTIFY_FLASH_COUNT):
-            await device.send_power(False)
+            await device.send_power(not was_on)
             await asyncio.sleep(_IDENTIFY_FLASH_INTERVAL)
-            await device.send_power(True)
+            await device.send_power(was_on)
             await asyncio.sleep(_IDENTIFY_FLASH_INTERVAL)
 
 

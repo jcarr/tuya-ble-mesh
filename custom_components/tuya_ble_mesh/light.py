@@ -30,6 +30,7 @@ from custom_components.tuya_ble_mesh.const import (
     DEVICE_BRIGHTNESS_MIN,
     DEVICE_COLOR_TEMP_MAX,
     DEVICE_COLOR_TEMP_MIN,
+    DEVICE_TYPE_SIG_LIGHT,
     HA_BRIGHTNESS_MAX,
     HA_BRIGHTNESS_MIN,
     HA_MIRED_MAX,
@@ -251,11 +252,17 @@ async def async_setup_entry(
         entry: Config entry being set up.
         async_add_entities: Callback to register new entities.
     """
-    if entry.data.get(CONF_DEVICE_TYPE) in PLUG_DEVICE_TYPES:
+    device_type = entry.data.get(CONF_DEVICE_TYPE)
+    if device_type in PLUG_DEVICE_TYPES:
         return
     runtime_data = entry.runtime_data
     coordinator: TuyaBLEMeshCoordinator = runtime_data.coordinator
     device_info: DeviceInfo = runtime_data.device_info
+    if device_type == DEVICE_TYPE_SIG_LIGHT:
+        from custom_components.tuya_ble_mesh.light_sig import TuyaBLEMeshSIGLight
+
+        async_add_entities([TuyaBLEMeshSIGLight(coordinator, entry.entry_id, device_info)])
+        return
     async_add_entities([TuyaBLEMeshLight(coordinator, entry.entry_id, device_info)])
 
 

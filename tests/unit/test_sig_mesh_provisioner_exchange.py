@@ -483,9 +483,12 @@ class TestMidProtocolErrors:
                 "tuya_ble_mesh.sig_mesh_provisioner_exchange.PROVISIONING_CAPABILITIES_TIMEOUT",
                 0.05,
             ),
+            patch("tuya_ble_mesh.sig_mesh_provisioner_exchange._INVITE_RETRY_TIMEOUT", 0.05),
             pytest.raises(ProvisioningError, match="Timeout"),
         ):
             await asyncio.wait_for(prov._run_exchange(client), timeout=5.0)
+        # Invite was retransmitted before giving up
+        assert _wq.qsize() >= 3
 
     @pytest.mark.asyncio
     async def test_public_key_timeout(self) -> None:

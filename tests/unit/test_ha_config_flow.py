@@ -14,12 +14,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
 from homeassistant.config_entries import HANDLERS
+from tuya_ble_mesh.exceptions import SIGMeshError
 
 from custom_components.tuya_ble_mesh.config_flow import (
     TuyaBLEMeshConfigFlow,
 )
 from custom_components.tuya_ble_mesh.config_flow_options import TuyaBLEMeshOptionsFlow
-from custom_components.tuya_ble_mesh.config_flow_sig import run_provision
+from custom_components.tuya_ble_mesh.config_flow_sig import (
+    NodeConfigurationError,
+    ProvisionedNode,
+    run_provision,
+)
 from custom_components.tuya_ble_mesh.config_flow_validators import (
     _parse_json_body,
     _test_bridge_with_session,
@@ -91,6 +96,17 @@ def _make_flow() -> TuyaBLEMeshConfigFlow:
 _TEST_NET_KEY = "00112233445566778899aabbccddeeff"  # pragma: allowlist secret
 _TEST_DEV_KEY = "ffeeddccbbaa99887766554433221100"  # pragma: allowlist secret
 _TEST_APP_KEY = "aabbccddeeff00112233445566778899"  # pragma: allowlist secret
+
+
+def _test_node() -> ProvisionedNode:
+    """ProvisionedNode as returned by a successful run_provision."""
+    return ProvisionedNode(
+        net_key=_TEST_NET_KEY,
+        dev_key=_TEST_DEV_KEY,
+        app_key=_TEST_APP_KEY,
+        unicast=0x00B0,
+        num_elements=1,
+    )
 
 
 @pytest.mark.requires_ha
@@ -424,7 +440,7 @@ class TestSIGPlugStep:
 
         with patch(
             "custom_components.tuya_ble_mesh.config_flow_sig.run_provision",
-            new=AsyncMock(return_value=(_TEST_NET_KEY, _TEST_DEV_KEY, _TEST_APP_KEY)),
+            new=AsyncMock(return_value=_test_node()),
         ):
             result = await flow.async_step_sig_plug({})
 
@@ -449,7 +465,7 @@ class TestSIGPlugStep:
 
         with patch(
             "custom_components.tuya_ble_mesh.config_flow_sig.run_provision",
-            new=AsyncMock(return_value=(_TEST_NET_KEY, _TEST_DEV_KEY, _TEST_APP_KEY)),
+            new=AsyncMock(return_value=_test_node()),
         ):
             result = await flow.async_step_sig_plug({})
 
@@ -588,7 +604,7 @@ class TestAutoDiscovery:
         # Step 2: submit sig_plug form (empty — auto-provisions) → entry created
         with patch(
             "custom_components.tuya_ble_mesh.config_flow_sig.run_provision",
-            new=AsyncMock(return_value=(_TEST_NET_KEY, _TEST_DEV_KEY, _TEST_APP_KEY)),
+            new=AsyncMock(return_value=_test_node()),
         ):
             result = await flow.async_step_sig_plug({})
         assert result["type"] == "create_entry"
@@ -1141,19 +1157,26 @@ class TestRunProvision:
         mock_device = MagicMock()
         mock_device.connect = AsyncMock()
         mock_device.disconnect = AsyncMock()
-        mock_device.send_config_app_key_add = AsyncMock(return_value=True)
+        mock_device._target_addr = 0x00B0
+        mock_device.get_composition_data = AsyncMock(side_effect=SIGMeshError("Timeout"))
+        mock_device.send_config_appkey_add = AsyncMock(return_value=True)
         mock_device.send_config_model_app_bind = AsyncMock(return_value=True)
 
         with (
             patch("tuya_ble_mesh.sig_mesh_provisioner.SIGMeshProvisioner") as mock_prov_cls,
-            patch("tuya_ble_mesh.sig_mesh_device.SIGMeshDevice", return_value=mock_device),
+            patch("tuya_ble_mesh.sig_mesh_light.SIGMeshLight", return_value=mock_device),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_provisioner = MagicMock()
             mock_provisioner.provision = AsyncMock(return_value=mock_prov_result)
             mock_prov_cls.return_value = mock_provisioner
 
-            net_key, dev_key, app_key = await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
+            node = await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
+        net_key, dev_key, app_key = node.net_key, node.dev_key, node.app_key
+        mock_device.send_config_model_app_bind.assert_awaited_once_with(0x00B0, 0, 0x1000)
+        mock_device.connect.assert_awaited_once_with(
+            timeout=20.0, max_retries=5, fresh_services=True
+        )
 
         # Verify keys are 32-char hex strings
         assert len(net_key) == 32
@@ -1164,7 +1187,7 @@ class TestRunProvision:
 
     @pytest.mark.asyncio
     async def test_run_provision_appkey_add_failed(self) -> None:
-        """AppKey add failure is logged but provisioning succeeds."""
+        """AppKey add rejection fails provisioning (device must be reset)."""
         flow = _make_flow()
 
         mock_prov_result = MagicMock()
@@ -1174,23 +1197,25 @@ class TestRunProvision:
         mock_device = MagicMock()
         mock_device.connect = AsyncMock()
         mock_device.disconnect = AsyncMock()
-        mock_device.send_config_app_key_add = AsyncMock(return_value=False)  # FAIL
+        mock_device._target_addr = 0x00B0
+        mock_device.get_composition_data = AsyncMock(side_effect=SIGMeshError("Timeout"))
+        mock_device.send_config_appkey_add = AsyncMock(return_value=False)  # FAIL
         mock_device.send_config_model_app_bind = AsyncMock(return_value=True)
 
         with (
             patch("tuya_ble_mesh.sig_mesh_provisioner.SIGMeshProvisioner") as mock_prov_cls,
-            patch("tuya_ble_mesh.sig_mesh_device.SIGMeshDevice", return_value=mock_device),
+            patch("tuya_ble_mesh.sig_mesh_light.SIGMeshLight", return_value=mock_device),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_provisioner = MagicMock()
             mock_provisioner.provision = AsyncMock(return_value=mock_prov_result)
             mock_prov_cls.return_value = mock_provisioner
 
-            net_key, dev_key, _app_key = await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
+            with pytest.raises(NodeConfigurationError):
+                await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
 
-        # Should still return keys (warning logged)
-        assert len(net_key) == 32
-        assert dev_key == _TEST_DEV_KEY
+        mock_device.send_config_model_app_bind.assert_not_awaited()
+        mock_device.disconnect.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_run_provision_model_bind_failed(self) -> None:
@@ -1204,19 +1229,22 @@ class TestRunProvision:
         mock_device = MagicMock()
         mock_device.connect = AsyncMock()
         mock_device.disconnect = AsyncMock()
-        mock_device.send_config_app_key_add = AsyncMock(return_value=True)
+        mock_device._target_addr = 0x00B0
+        mock_device.get_composition_data = AsyncMock(side_effect=SIGMeshError("Timeout"))
+        mock_device.send_config_appkey_add = AsyncMock(return_value=True)
         mock_device.send_config_model_app_bind = AsyncMock(return_value=False)  # FAIL
 
         with (
             patch("tuya_ble_mesh.sig_mesh_provisioner.SIGMeshProvisioner") as mock_prov_cls,
-            patch("tuya_ble_mesh.sig_mesh_device.SIGMeshDevice", return_value=mock_device),
+            patch("tuya_ble_mesh.sig_mesh_light.SIGMeshLight", return_value=mock_device),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_provisioner = MagicMock()
             mock_provisioner.provision = AsyncMock(return_value=mock_prov_result)
             mock_prov_cls.return_value = mock_provisioner
 
-            net_key, dev_key, _app_key = await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
+            node = await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
+        net_key, dev_key = node.net_key, node.dev_key
 
         # Should still return keys
         assert len(net_key) == 32
@@ -1224,7 +1252,7 @@ class TestRunProvision:
 
     @pytest.mark.asyncio
     async def test_run_provision_post_config_exception(self) -> None:
-        """Exception in post-provisioning config is caught and logged."""
+        """Post-provisioning failure raises NodeConfigurationError (after disconnect)."""
         flow = _make_flow()
 
         mock_prov_result = MagicMock()
@@ -1234,21 +1262,21 @@ class TestRunProvision:
         mock_device = MagicMock()
         mock_device.connect = AsyncMock(side_effect=Exception("connection timeout"))
         mock_device.disconnect = AsyncMock()
+        mock_device._target_addr = 0x00B0
+        mock_device.get_composition_data = AsyncMock(side_effect=SIGMeshError("Timeout"))
 
         with (
             patch("tuya_ble_mesh.sig_mesh_provisioner.SIGMeshProvisioner") as mock_prov_cls,
-            patch("tuya_ble_mesh.sig_mesh_device.SIGMeshDevice", return_value=mock_device),
+            patch("tuya_ble_mesh.sig_mesh_light.SIGMeshLight", return_value=mock_device),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_provisioner = MagicMock()
             mock_provisioner.provision = AsyncMock(return_value=mock_prov_result)
             mock_prov_cls.return_value = mock_provisioner
 
-            # Should still return keys despite post-config failure
-            net_key, dev_key, _app_key = await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
+            with pytest.raises(NodeConfigurationError):
+                await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
 
-        assert len(net_key) == 32
-        assert dev_key == _TEST_DEV_KEY
         mock_device.disconnect.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1263,7 +1291,9 @@ class TestRunProvision:
         mock_device = MagicMock()
         mock_device.connect = AsyncMock()
         mock_device.disconnect = AsyncMock()
-        mock_device.send_config_app_key_add = AsyncMock(return_value=True)
+        mock_device._target_addr = 0x00B0
+        mock_device.get_composition_data = AsyncMock(side_effect=SIGMeshError("Timeout"))
+        mock_device.send_config_appkey_add = AsyncMock(return_value=True)
         mock_device.send_config_model_app_bind = AsyncMock(return_value=True)
 
         # Capture the callbacks passed to SIGMeshProvisioner
@@ -1287,7 +1317,7 @@ class TestRunProvision:
                 "tuya_ble_mesh.sig_mesh_provisioner.SIGMeshProvisioner",
                 side_effect=capture_provisioner_init,
             ),
-            patch("tuya_ble_mesh.sig_mesh_device.SIGMeshDevice", return_value=mock_device),
+            patch("tuya_ble_mesh.sig_mesh_light.SIGMeshLight", return_value=mock_device),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")
@@ -1337,7 +1367,9 @@ class TestRunProvision:
         mock_device = MagicMock()
         mock_device.connect = AsyncMock()
         mock_device.disconnect = AsyncMock()
-        mock_device.send_config_app_key_add = AsyncMock(return_value=True)
+        mock_device._target_addr = 0x00B0
+        mock_device.get_composition_data = AsyncMock(side_effect=SIGMeshError("Timeout"))
+        mock_device.send_config_appkey_add = AsyncMock(return_value=True)
         mock_device.send_config_model_app_bind = AsyncMock(return_value=True)
 
         # Capture the callbacks passed to SIGMeshProvisioner
@@ -1361,7 +1393,7 @@ class TestRunProvision:
                 "tuya_ble_mesh.sig_mesh_provisioner.SIGMeshProvisioner",
                 side_effect=capture_provisioner_init,
             ),
-            patch("tuya_ble_mesh.sig_mesh_device.SIGMeshDevice", return_value=mock_device),
+            patch("tuya_ble_mesh.sig_mesh_light.SIGMeshLight", return_value=mock_device),
             patch("asyncio.sleep", new_callable=AsyncMock),
         ):
             await run_provision(flow.hass, "AA:BB:CC:DD:EE:FF")

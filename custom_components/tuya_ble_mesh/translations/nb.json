@@ -70,6 +70,11 @@
           "bridge_host": "The IP address or hostname of your device (e.g. your Raspberry Pi).",
           "bridge_port": "Port the device is listening on. Default is 8099."
         }
+      },
+      "sig_light": {
+        "title": "Setting Up {name}",
+        "description": "We'll automatically add your light to Home Assistant and set up a secure connection to it.\n\nMake sure the light is **powered on**, **freshly reset** and **close to your Bluetooth adapter or proxy**, then click **Submit**.",
+        "data": {}
       }
     },
     "error": {
@@ -93,7 +98,8 @@
       "timeout_validation": "Validering fikk tidsavbrudd (over 30 sekunder). Kontroller at enheten er slått på og nær Bluetooth-adapteren, og prøv igjen.",
       "provisioning_appkey_failed": "Kunne ikke binde applikasjonsnøkkelen. Prøv å tilbakestille enheten til fabrikkinnstillinger og legg den til igjen.",
       "provisioning_proxy_failed": "Proxy Service-trinnet mislyktes. Sørg for at Proxy Service er aktivert på enheten og prøv igjen.",
-      "provisioning_pbgatt_failed": "PB-GATT-tilkoblingen mislyktes. Flytt enheten nærmere Bluetooth-adapteren og prøv igjen."
+      "provisioning_pbgatt_failed": "PB-GATT-tilkoblingen mislyktes. Flytt enheten nærmere Bluetooth-adapteren og prøv igjen.",
+      "configuration_failed": "The device accepted the secure connection but could not finish setup. Factory reset the device (usually by switching it off and on several times), then try again."
     },
     "abort": {
       "already_configured": "Denne enheten er allerede konfigurert i Home Assistant.",

@@ -70,6 +70,11 @@
           "bridge_host": "Enhetsadress",
           "bridge_port": "Enhetsport"
         }
+      },
+      "sig_light": {
+        "title": "Setting Up {name}",
+        "description": "We'll automatically add your light to Home Assistant and set up a secure connection to it.\n\nMake sure the light is **powered on**, **freshly reset** and **close to your Bluetooth adapter or proxy**, then click **Submit**.",
+        "data": {}
       }
     },
     "error": {
@@ -93,7 +98,8 @@
       "ble_adapter_busy": "Din Bluetooth-adapter är upptagen. En annan app använder den. För att lösa detta: (1) Lägg till en ESPHome Bluetooth Proxy, eller (2) Installera en andra USB Bluetooth-adapter. Se dokumentationen för mer information.",
       "provisioning_appkey_failed": "Kunde inte binda applikationsnyckeln. Prova att fabriksåterställa enheten och lägg till den igen.",
       "provisioning_proxy_failed": "Proxy Service-steget misslyckades. Kontrollera att Proxy Service är aktiverat på enheten och försök igen.",
-      "provisioning_pbgatt_failed": "PB-GATT-anslutning misslyckades. Flytta enheten närmare Bluetooth-adaptern och försök igen."
+      "provisioning_pbgatt_failed": "PB-GATT-anslutning misslyckades. Flytta enheten närmare Bluetooth-adaptern och försök igen.",
+      "configuration_failed": "The device accepted the secure connection but could not finish setup. Factory reset the device (usually by switching it off and on several times), then try again."
     },
     "abort": {
       "already_configured": "Den här enheten är redan konfigurerad i Home Assistant.",

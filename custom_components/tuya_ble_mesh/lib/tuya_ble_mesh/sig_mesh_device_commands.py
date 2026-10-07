@@ -35,6 +35,8 @@ from tuya_ble_mesh.sig_mesh_device_segments import (
     _OPCODE_MODEL_APP_STATUS,
 )
 from tuya_ble_mesh.sig_mesh_protocol import (
+    MAX_UNSEG_ACCESS_PAYLOAD,
+    OP_CONFIG_COMPOSITION_STATUS,
     SEG_DATA_SIZE,
     config_appkey_add,
     config_composition_get,
@@ -44,6 +46,15 @@ from tuya_ble_mesh.sig_mesh_protocol import (
     make_access_segmented,
     make_access_unsegmented,
     make_proxy_pdu,
+)
+from tuya_ble_mesh.sig_mesh_protocol_codec import (
+    MODEL_HEALTH_SERVER,
+    OP_CONFIG_MODEL_PUB_STATUS,
+    OP_HEALTH_ATTENTION_STATUS,
+    config_model_app_bind_vendor,
+    config_model_pub_set,
+    health_attention_set,
+    segment_ack,
 )
 
 if TYPE_CHECKING:
@@ -89,6 +100,254 @@ class SIGMeshDeviceCommandsMixin:
 
     async def _next_seqs(self, n: int) -> int:
         raise NotImplementedError
+
+    async def _write_proxy(self, data: bytes) -> None:
+        """Write a proxy PDU to Mesh Proxy Data In.
+
+        Uses the characteristic object resolved at connect time when available
+        (handles devices/caches exposing the UUID more than once).
+        """
+        char = getattr(self, "_data_in_char", None)
+        await self._client.write_gatt_char(
+            char if char is not None else SIG_MESH_PROXY_DATA_IN, data, response=False
+        )
+
+    async def _send_access(
+        self,
+        access_payload: bytes,
+        *,
+        use_dev_key: bool,
+        dst: int | None = None,
+        expect_opcode: int | None = None,
+        response_timeout: float = DEFAULT_SIG_MESH_RESPONSE_TIMEOUT,
+    ) -> bytes | None:
+        """Encrypt and send an access message, optionally awaiting a reply.
+
+        Chooses unsegmented or segmented transport based on payload length.
+
+        Args:
+            access_payload: Opcode + parameters.
+            use_dev_key: True for Config messages (device key), False for app key.
+            dst: Destination address (defaults to the device's primary unicast).
+            expect_opcode: If set, wait for a message with this opcode and return
+                its parameters.
+            response_timeout: Seconds to wait for the reply.
+
+        Returns:
+            Reply parameters if ``expect_opcode`` was given, else None.
+
+        Raises:
+            SIGMeshError: If not connected, keys missing, or reply timed out.
+        """
+        if self._client is None or self._keys is None:
+            msg = "Not connected"
+            raise SIGMeshError(msg)
+        if use_dev_key:
+            key, akf, aid = self._keys.dev_key, 0, 0
+        else:
+            if self._keys.app_key is None:
+                msg = "No application key loaded"
+                raise SIGMeshKeyError(msg)
+            key, akf, aid = self._keys.app_key, 1, self._keys.aid
+        target = self._target_addr if dst is None else dst
+
+        if len(access_payload) <= MAX_UNSEG_ACCESS_PAYLOAD:
+            seq = await self._next_seq()
+            pdus = [
+                (
+                    seq,
+                    make_access_unsegmented(
+                        key,
+                        self._our_addr,
+                        target,
+                        seq,
+                        self._keys.iv_index,
+                        access_payload,
+                        akf=akf,
+                        aid=aid,
+                    ),
+                )
+            ]
+        else:
+            n_segs = (len(access_payload) + 4 + SEG_DATA_SIZE - 1) // SEG_DATA_SIZE
+            seq_start = await self._next_seqs(n_segs)
+            pdus = make_access_segmented(
+                key,
+                self._our_addr,
+                target,
+                seq_start,
+                self._keys.iv_index,
+                access_payload,
+                akf=akf,
+                aid=aid,
+            )
+
+        future: asyncio.Future[bytes] | None = None
+        resp_key: tuple[int, int] | None = None
+        if expect_opcode is not None:
+            future = asyncio.get_running_loop().create_future()
+            async with self._segment_lock:
+                resp_key = (expect_opcode, self._correlation_id)
+                self._correlation_id += 1
+                self._pending_responses[resp_key] = future
+
+        try:
+            for i, (seg_seq, transport_pdu) in enumerate(pdus):
+                network_pdu = encrypt_network_pdu(
+                    self._keys.enc_key,
+                    self._keys.priv_key,
+                    self._keys.nid,
+                    ctl=0,
+                    ttl=_DEFAULT_TTL,
+                    seq=seg_seq,
+                    src=self._our_addr,
+                    dst=target,
+                    transport_pdu=transport_pdu,
+                    iv_index=self._keys.iv_index,
+                )
+                await self._write_proxy(make_proxy_pdu(network_pdu))
+                if len(pdus) > 1 and i < len(pdus) - 1:
+                    await asyncio.sleep(STATUS_WAIT_POLL_INTERVAL)
+            _LOGGER.debug(
+                "Access message sent to 0x%04X (opcode=%s, %d PDU(s), %s key)",
+                target,
+                access_payload[:2].hex(),
+                len(pdus),
+                "dev" if use_dev_key else "app",
+            )
+            if future is None:
+                return None
+            return await asyncio.wait_for(asyncio.shield(future), timeout=response_timeout)
+        except TimeoutError:
+            msg = f"Timeout waiting for opcode 0x{expect_opcode or 0:04X} from 0x{target:04X}"
+            raise SIGMeshError(msg) from None
+        finally:
+            if resp_key is not None:
+                async with self._segment_lock:
+                    self._pending_responses.pop(resp_key, None)
+
+    async def _send_segment_ack(self, dst: int, seq_zero: int, block_ack: int) -> None:
+        """Send a Segment Acknowledgment control message to ``dst``."""
+        if self._client is None or self._keys is None:
+            return
+        seq = await self._next_seq()
+        network_pdu = encrypt_network_pdu(
+            self._keys.enc_key,
+            self._keys.priv_key,
+            self._keys.nid,
+            ctl=1,
+            ttl=_DEFAULT_TTL,
+            seq=seq,
+            src=self._our_addr,
+            dst=dst,
+            transport_pdu=segment_ack(seq_zero, block_ack),
+            iv_index=self._keys.iv_index,
+        )
+        await self._write_proxy(make_proxy_pdu(network_pdu))
+        _LOGGER.debug("Segment Ack sent to 0x%04X (seq_zero=%d)", dst, seq_zero)
+
+    async def get_composition_data(
+        self, *, response_timeout: float = DEFAULT_SIG_MESH_RESPONSE_TIMEOUT
+    ) -> bytes:
+        """Send Config Composition Data Get (page 0) and await the Status.
+
+        The parsed result is also stored on the device and delivered to
+        composition callbacks.
+
+        Returns:
+            Raw Composition Data Status parameters.
+        """
+        params = await self._send_access(
+            config_composition_get(page=0),
+            use_dev_key=True,
+            expect_opcode=OP_CONFIG_COMPOSITION_STATUS,
+            response_timeout=response_timeout,
+        )
+        return params or b""
+
+    async def send_config_model_app_bind_vendor(
+        self,
+        element_addr: int,
+        app_idx: int,
+        cid: int,
+        model_id: int,
+        *,
+        response_timeout: float = SIG_MESH_ONOFF_RESPONSE_TIMEOUT,
+    ) -> bool:
+        """Bind an application key to a vendor model and await the Status."""
+        params = await self._send_access(
+            config_model_app_bind_vendor(element_addr, app_idx, cid, model_id),
+            use_dev_key=True,
+            expect_opcode=_OPCODE_MODEL_APP_STATUS,
+            response_timeout=response_timeout,
+        )
+        status = params[0] if params else 0xFF
+        _LOGGER.info(
+            "Model App Status (vendor 0x%04X:0x%04X @0x%04X): 0x%02X",
+            cid,
+            model_id,
+            element_addr,
+            status,
+        )
+        return status == 0x00
+
+    async def send_config_model_pub_set(
+        self,
+        element_addr: int,
+        publish_addr: int,
+        app_idx: int,
+        model_id: int,
+        *,
+        response_timeout: float = DEFAULT_SIG_MESH_RESPONSE_TIMEOUT,
+    ) -> bool:
+        """Configure a SIG model to publish its status to ``publish_addr``."""
+        params = await self._send_access(
+            config_model_pub_set(element_addr, publish_addr, app_idx, model_id),
+            use_dev_key=True,
+            expect_opcode=OP_CONFIG_MODEL_PUB_STATUS,
+            response_timeout=response_timeout,
+        )
+        status = params[0] if params else 0xFF
+        _LOGGER.info(
+            "Model Publication Status (model 0x%04X @0x%04X -> 0x%04X): 0x%02X",
+            model_id,
+            element_addr,
+            publish_addr,
+            status,
+        )
+        return status == 0x00
+
+    async def send_attention(self, seconds: int = 5) -> bool:
+        """Make the node blink by itself for ``seconds`` (Health Attention Set).
+
+        Nodes provisioned before the Health Server was app-bound don't answer;
+        in that case the Health Server is bound (device key) and the request
+        retried once.
+
+        Returns:
+            True if the node acknowledged the attention timer.
+        """
+        payload = health_attention_set(max(0, min(int(seconds), 0xFF)))
+        for attempt in (1, 2):
+            try:
+                await self._send_access(
+                    payload,
+                    use_dev_key=False,
+                    expect_opcode=OP_HEALTH_ATTENTION_STATUS,
+                    response_timeout=SIG_MESH_ONOFF_RESPONSE_TIMEOUT,
+                )
+                _LOGGER.info("Attention %ds started on 0x%04X", seconds, self._target_addr)
+                return True
+            except SIGMeshError:
+                if attempt == 2:
+                    break
+                _LOGGER.info("No Attention Status; binding Health Server and retrying")
+                try:
+                    await self.send_config_model_app_bind(self._target_addr, 0, MODEL_HEALTH_SERVER)
+                except SIGMeshError:
+                    break
+        _LOGGER.warning("Node 0x%04X did not acknowledge Attention", self._target_addr)
+        return False
 
     async def send_power(
         self, on: bool, *, max_retries: int = DEFAULT_SIG_MESH_MAX_RETRIES
@@ -150,9 +409,7 @@ class SIGMeshDeviceCommandsMixin:
 
                 proxy_pdu = make_proxy_pdu(network_pdu)
 
-                await self._client.write_gatt_char(
-                    SIG_MESH_PROXY_DATA_IN, proxy_pdu, response=False
-                )
+                await self._write_proxy(proxy_pdu)
                 _LOGGER.info(
                     "GenericOnOff %s sent to 0x%04X (seq=%d, attempt=%d)",
                     "ON" if on else "OFF",
@@ -227,7 +484,7 @@ class SIGMeshDeviceCommandsMixin:
         )
 
         proxy_pdu = make_proxy_pdu(network_pdu)
-        await self._client.write_gatt_char(SIG_MESH_PROXY_DATA_IN, proxy_pdu, response=False)
+        await self._write_proxy(proxy_pdu)
 
         _LOGGER.info(
             "Vendor command sent to 0x%04X (opcode=%s, seq=%d, %d bytes)",
@@ -277,7 +534,7 @@ class SIGMeshDeviceCommandsMixin:
         )
 
         proxy_pdu = make_proxy_pdu(network_pdu)
-        await self._client.write_gatt_char(SIG_MESH_PROXY_DATA_IN, proxy_pdu, response=False)
+        await self._write_proxy(proxy_pdu)
         _LOGGER.info(
             "Composition Data Get sent to 0x%04X (seq=%d)",
             self._target_addr,
@@ -352,9 +609,7 @@ class SIGMeshDeviceCommandsMixin:
                     iv_index=self._keys.iv_index,
                 )
                 proxy_pdu = make_proxy_pdu(network_pdu)
-                await self._client.write_gatt_char(
-                    SIG_MESH_PROXY_DATA_IN, proxy_pdu, response=False
-                )
+                await self._write_proxy(proxy_pdu)
                 await asyncio.sleep(STATUS_WAIT_POLL_INTERVAL)
 
             _LOGGER.info(
@@ -446,7 +701,7 @@ class SIGMeshDeviceCommandsMixin:
             self._pending_responses[resp_key] = future_bind
 
         try:
-            await self._client.write_gatt_char(SIG_MESH_PROXY_DATA_IN, proxy_pdu, response=False)
+            await self._write_proxy(proxy_pdu)
             _LOGGER.info(
                 "Model App Bind sent: element=0x%04X app_idx=%d model=0x%04X (seq=%d)",
                 element_addr,
