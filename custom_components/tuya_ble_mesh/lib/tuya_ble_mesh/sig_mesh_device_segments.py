@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from tuya_ble_mesh.exceptions import MalformedPacketError
+from tuya_ble_mesh.exceptions import DisconnectedError, MalformedPacketError
 from tuya_ble_mesh.logging_context import MeshLogAdapter
 from tuya_ble_mesh.sig_mesh_protocol import (
     _OPCODE_COMPOSITION_STATUS,
@@ -37,7 +37,7 @@ from tuya_ble_mesh.sig_mesh_protocol import (
 if TYPE_CHECKING:
     from bleak.backends.characteristic import BleakGATTCharacteristic
 
-    from tuya_ble_mesh.sig_mesh_protocol import MeshKeys
+    from tuya_ble_mesh.sig_mesh_protocol import MeshKeys, NetworkPDU
 
 _LOGGER = MeshLogAdapter(logging.getLogger(__name__), {})
 
@@ -178,6 +178,21 @@ class SIGMeshDeviceSegmentsMixin:
         )
         if net_pdu is None:
             _LOGGER.debug("Network PDU decryption failed or NID mismatch")
+            return
+
+        await self._process_network_pdu(net_pdu)
+
+    async def _process_network_pdu(self, net_pdu: NetworkPDU) -> None:
+        """Handle a decrypted network PDU addressed to us.
+
+        Split from ``_process_notify`` so a shared ``MeshNetwork`` link can
+        decrypt the network layer once and route each PDU to the node that
+        owns its source address.
+
+        Args:
+            net_pdu: Decrypted network PDU.
+        """
+        if self._keys is None:
             return
 
         if net_pdu.ctl == 1:
@@ -517,6 +532,11 @@ class SIGMeshDeviceSegmentsMixin:
         """
         _LOGGER.warning("SIG Mesh device disconnected: %s", self._address)
         self._client = None
+        # Fail in-flight requests now instead of letting each wait out its
+        # response timeout against a link that is gone.
+        for future in self._pending_responses.values():
+            if not future.done():
+                future.set_exception(DisconnectedError(f"Disconnected from {self._address}"))
         for callback in list(self._disconnect_callbacks):
             try:
                 callback()

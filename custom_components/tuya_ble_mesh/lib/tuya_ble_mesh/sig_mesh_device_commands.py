@@ -7,6 +7,7 @@ Provides ``SIGMeshDeviceCommandsMixin`` which handles:
 - Config Composition Data Get
 - Config AppKey Add (segmented transport)
 - Config Model App Bind
+- Read-only node feature probes (relay, proxy, friend, beacon, TTL, transmit)
 
 This mixin is not intended for standalone use — it requires attributes
 defined in ``SIGMeshDevice.__init__``.
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from tuya_ble_mesh.const import (
@@ -25,6 +27,7 @@ from tuya_ble_mesh.const import (
     STATUS_WAIT_POLL_INTERVAL,
 )
 from tuya_ble_mesh.exceptions import (
+    MalformedPacketError,
     MeshConnectionError,
     SIGMeshError,
     SIGMeshKeyError,
@@ -48,12 +51,31 @@ from tuya_ble_mesh.sig_mesh_protocol import (
     make_proxy_pdu,
 )
 from tuya_ble_mesh.sig_mesh_protocol_codec import (
+    FEATURE_STATE_NAMES,
     MODEL_HEALTH_SERVER,
+    OP_CONFIG_BEACON_GET,
+    OP_CONFIG_BEACON_STATUS,
+    OP_CONFIG_DEFAULT_TTL_GET,
+    OP_CONFIG_DEFAULT_TTL_STATUS,
+    OP_CONFIG_FRIEND_GET,
+    OP_CONFIG_FRIEND_STATUS,
+    OP_CONFIG_GATT_PROXY_GET,
+    OP_CONFIG_GATT_PROXY_STATUS,
     OP_CONFIG_MODEL_PUB_STATUS,
+    OP_CONFIG_NETWORK_TRANSMIT_GET,
+    OP_CONFIG_NETWORK_TRANSMIT_STATUS,
+    OP_CONFIG_NODE_RESET,
+    OP_CONFIG_NODE_RESET_STATUS,
+    OP_CONFIG_RELAY_GET,
+    OP_CONFIG_RELAY_STATUS,
     OP_HEALTH_ATTENTION_STATUS,
     config_model_app_bind_vendor,
     config_model_pub_set,
+    config_state_get,
     health_attention_set,
+    parse_relay_status,
+    parse_single_byte_status,
+    parse_transmit_byte,
     segment_ack,
 )
 
@@ -265,6 +287,113 @@ class SIGMeshDeviceCommandsMixin:
         )
         return params or b""
 
+    async def probe_node_features(
+        self, *, response_timeout: float = SIG_MESH_ONOFF_RESPONSE_TIMEOUT
+    ) -> dict[str, str]:
+        """Read the node's relay/proxy/friend/beacon/TTL/transmit state.
+
+        Read-only (Config ``* Get`` only). Each probe is independent: a probe
+        that times out or fails to parse is reported as ``"no_reply"`` /
+        ``"malformed"`` rather than aborting the rest.
+
+        Returns:
+            Human-readable state per feature, e.g. ``{"relay": "enabled
+            (2x @ 20ms)", "gatt_proxy": "enabled", ...}``.
+        """
+
+        def _feature(value: int) -> str:
+            return str(FEATURE_STATE_NAMES.get(value, f"0x{value:02X}"))
+
+        def _relay(params: bytes) -> str:
+            st = parse_relay_status(params)
+            rt = st.retransmit
+            return f"{_feature(st.relay)} ({rt.transmissions}x @ {rt.interval_ms}ms)"
+
+        def _transmit(params: bytes) -> str:
+            tx = parse_transmit_byte(parse_single_byte_status(params, "Network Transmit"))
+            return f"{tx.transmissions}x @ {tx.interval_ms}ms"
+
+        probes: list[tuple[str, int, int, Callable[[bytes], str]]] = [
+            ("relay", OP_CONFIG_RELAY_GET, OP_CONFIG_RELAY_STATUS, _relay),
+            (
+                "gatt_proxy",
+                OP_CONFIG_GATT_PROXY_GET,
+                OP_CONFIG_GATT_PROXY_STATUS,
+                lambda p: _feature(parse_single_byte_status(p, "GATT Proxy")),
+            ),
+            (
+                "friend",
+                OP_CONFIG_FRIEND_GET,
+                OP_CONFIG_FRIEND_STATUS,
+                lambda p: _feature(parse_single_byte_status(p, "Friend")),
+            ),
+            (
+                "secure_beacon",
+                OP_CONFIG_BEACON_GET,
+                OP_CONFIG_BEACON_STATUS,
+                lambda p: _feature(parse_single_byte_status(p, "Beacon")),
+            ),
+            (
+                "default_ttl",
+                OP_CONFIG_DEFAULT_TTL_GET,
+                OP_CONFIG_DEFAULT_TTL_STATUS,
+                lambda p: str(parse_single_byte_status(p, "Default TTL")),
+            ),
+            (
+                "network_transmit",
+                OP_CONFIG_NETWORK_TRANSMIT_GET,
+                OP_CONFIG_NETWORK_TRANSMIT_STATUS,
+                _transmit,
+            ),
+        ]
+        result: dict[str, str] = {}
+        for name, get_op, status_op, decode in probes:
+            try:
+                params = await self._send_access(
+                    config_state_get(get_op),
+                    use_dev_key=True,
+                    expect_opcode=status_op,
+                    response_timeout=response_timeout,
+                )
+            except SIGMeshError:
+                if self._client is None:
+                    raise
+                result[name] = "no_reply"
+                continue
+            try:
+                result[name] = decode(params or b"")
+            except MalformedPacketError:
+                result[name] = "malformed"
+        return result
+
+    async def send_config_node_reset(
+        self, *, response_timeout: float = SIG_MESH_ONOFF_RESPONSE_TIMEOUT
+    ) -> bool:
+        """Tell the node to forget its keys and become unprovisioned.
+
+        Sent with the device key. The node answers Config Node Reset Status
+        and then wipes itself, after which it advertises the Provisioning
+        service (0x1827) again.
+
+        Returns:
+            True if the node acknowledged the reset, False on no reply (the
+            reset may still have happened — check for its 0x1827 advert).
+        """
+        try:
+            await self._send_access(
+                config_state_get(OP_CONFIG_NODE_RESET),
+                use_dev_key=True,
+                expect_opcode=OP_CONFIG_NODE_RESET_STATUS,
+                response_timeout=response_timeout,
+            )
+        except SIGMeshError:
+            if self._client is None:
+                raise
+            _LOGGER.warning("No Node Reset Status from 0x%04X", self._target_addr)
+            return False
+        _LOGGER.info("Node 0x%04X acknowledged Config Node Reset", self._target_addr)
+        return True
+
     async def send_config_model_app_bind_vendor(
         self,
         element_addr: int,
@@ -448,49 +577,14 @@ class SIGMeshDeviceCommandsMixin:
             SIGMeshError: If not connected or keys not loaded.
             MeshConnectionError: If BLE write fails.
         """
-        if self._client is None or self._keys is None:
-            msg = "Not connected"
-            raise SIGMeshError(msg)
-
-        app_key = self._keys.app_key
-        if app_key is None:
-            msg = "No application key loaded"
-            raise SIGMeshKeyError(msg)
-
-        seq = await self._next_seq()
-
-        transport_pdu = make_access_unsegmented(
-            app_key,
-            self._our_addr,
-            self._target_addr,
-            seq,
-            self._keys.iv_index,
-            access_payload,
-            akf=1,
-            aid=self._keys.aid,
-        )
-
-        network_pdu = encrypt_network_pdu(
-            self._keys.enc_key,
-            self._keys.priv_key,
-            self._keys.nid,
-            ctl=0,
-            ttl=_DEFAULT_TTL,
-            seq=seq,
-            src=self._our_addr,
-            dst=self._target_addr,
-            transport_pdu=transport_pdu,
-            iv_index=self._keys.iv_index,
-        )
-
-        proxy_pdu = make_proxy_pdu(network_pdu)
-        await self._write_proxy(proxy_pdu)
+        # _send_access picks segmented transport for payloads > 11 bytes
+        # (e.g. the 13-byte Tuya timestamp sync response).
+        await self._send_access(access_payload, use_dev_key=False)
 
         _LOGGER.info(
-            "Vendor command sent to 0x%04X (opcode=%s, seq=%d, %d bytes)",
+            "Vendor command sent to 0x%04X (opcode=%s, %d bytes)",
             self._target_addr,
             access_payload[:3].hex(),
-            seq,
             len(access_payload),
         )
 
