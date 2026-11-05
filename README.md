@@ -86,19 +86,11 @@ Devices using the Tuya BLE Mesh / Telink stack with service UUID `fe07`:
 
 ## Installation
 
-### Via HACS (recommended)
+HACS is no longer available in current Home Assistant, so install manually:
 
-1. Open **HACS** in Home Assistant
-2. Go to **Integrations** → three-dot menu → **Custom repositories**
-3. Add URL: `https://github.com/11z4t/tuya-ble-mesh`
-4. Category: **Integration**
-5. Search for **"Tuya BLE Mesh"** and click **Download**
-6. **Restart Home Assistant**
-
-### Manual
-
-1. Copy `custom_components/tuya_ble_mesh/` to your HA `config/custom_components/` directory
-2. Restart Home Assistant
+1. Download or clone the repository: `git clone https://github.com/svyourmom/tuya-ble-mesh.git`
+2. Copy the `custom_components/tuya_ble_mesh/` directory into your HA `config/custom_components/` directory, so you end up with `config/custom_components/tuya_ble_mesh/manifest.json`.
+3. Restart Home Assistant (Settings → System → Restart).
 
 ## Configuration
 

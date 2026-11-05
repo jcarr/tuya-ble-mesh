@@ -8,48 +8,20 @@ This guide covers how to install and configure the Tuya BLE Mesh integration.
 - **Bluetooth adapter** on your Home Assistant host OR ESPHome BLE Proxy
 - **Tuya BLE Mesh devices** (e.g., Malmbergs BT Smart)
 
-## Method 1: HACS (Recommended)
+## Manual Installation (Recommended)
 
-HACS (Home Assistant Community Store) provides the easiest installation and update path.
-
-### Step 1: Install HACS
-
-If you don't have HACS installed:
-
-1. Visit [hacs.xyz](https://hacs.xyz) and follow the installation instructions
-2. Restart Home Assistant
-3. Complete HACS setup via the UI
-
-### Step 2: Add Custom Repository
-
-1. Open **HACS** in Home Assistant
-2. Click the three-dot menu (top right) → **Custom repositories**
-3. Add repository URL: `https://github.com/11z4t/tuya-ble-mesh`
-4. Category: **Integration**
-5. Click **Add**
-
-### Step 3: Install Integration
-
-1. In HACS, go to **Integrations**
-2. Search for **"Tuya BLE Mesh"**
-3. Click **Download**
-4. Select the latest version
-5. **Restart Home Assistant**
-
-## Method 2: Manual Installation
-
-For users who prefer manual control or don't use HACS.
+HACS is no longer available in current Home Assistant, so install manually.
 
 ### Step 1: Download
 
-Download the latest release from GitHub:
+Clone the repository:
 ```bash
-wget https://github.com/11z4t/tuya-ble-mesh/releases/latest/download/tuya-ble-mesh.zip
+git clone https://github.com/svyourmom/tuya-ble-mesh.git
 ```
 
-Or clone the repository:
+Or download the main branch as a zip:
 ```bash
-git clone https://github.com/11z4t/tuya-ble-mesh.git
+wget https://github.com/svyourmom/tuya-ble-mesh/archive/refs/heads/main.zip
 ```
 
 ### Step 2: Copy Files
@@ -234,13 +206,6 @@ If device is in unknown state:
 3. Re-add via config flow
 
 ## Updating
-
-### Via HACS
-
-1. Open **HACS** → **Integrations**
-2. Find **Tuya BLE Mesh**
-3. Click **Update** if available
-4. **Restart Home Assistant**
 
 ### Manual Update
 
